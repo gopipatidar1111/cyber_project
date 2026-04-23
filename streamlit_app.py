@@ -269,131 +269,52 @@ def get_risk_level(score, label=None):
 # ─────────────────────────────────────────────
 def render_gauge(risk_score, risk_level, risk_color):
     """
-    Renders a proper Plotly semicircle gauge with a needle
-    that always points to the exact risk score position.
-    Uses needle drawn via scatter trace so it renders correctly.
+    Proper half-circle speedometer gauge using go.Indicator.
+    Score text appears centered inside the arc, needle always correct.
     """
-    # Needle angle: score 0 → 180° (left), score 100 → 0° (right)
-    angle_deg = 180.0 - (risk_score / 100.0) * 180.0
-    angle_rad = math.radians(angle_deg)
-
-    # Needle tip and base coords (unit circle, Plotly uses x/y in [-1,1] domain)
-    needle_length = 0.75
-    needle_tip_x  = needle_length * math.cos(angle_rad)
-    needle_tip_y  = needle_length * math.sin(angle_rad)
-
-    # Perpendicular base points (small width at centre)
-    base_w = 0.03
-    perp   = angle_rad + math.pi / 2
-    base_x1 = base_w * math.cos(perp)
-    base_y1 = base_w * math.sin(perp)
-
-    fig = go.Figure()
-
-    # ── Gauge arc (background + coloured zones) ──────────────────────
-    fig.add_trace(go.Pie(
-        values=[40, 30, 30],                        # LOW / MED / HIGH zones
-        hole=0.5,
-        rotation=180,                               # start at left (0 score)
-        direction='clockwise',
-        marker=dict(
-            colors=[
-                'rgba(0,200,100,0.30)',
-                'rgba(255,170,0,0.30)',
-                'rgba(255,60,60,0.30)',
-            ],
-            line=dict(color='#0a0e1a', width=2),
+    fig = go.Figure(go.Indicator(
+        mode="gauge+number",
+        value=risk_score,
+        number=dict(
+            font=dict(size=42, color=risk_color, family='Segoe UI'),
+            suffix="/100",
         ),
-        showlegend=False,
-        textinfo='none',
-        hoverinfo='none',
+        gauge=dict(
+            axis=dict(
+                range=[0, 100],
+                tickwidth=2,
+                tickcolor="#4a6c8f",
+                tickvals=[0, 20, 40, 60, 80, 100],
+                ticktext=["0", "20", "40", "60", "80", "100"],
+                tickfont=dict(color='#7a9cc0', size=12),
+            ),
+            bar=dict(color=risk_color, thickness=0.25),
+            bgcolor='rgba(0,0,0,0)',
+            borderwidth=0,
+            steps=[
+                dict(range=[0,  40], color='rgba(0,200,100,0.25)'),
+                dict(range=[40, 70], color='rgba(255,170,0,0.25)'),
+                dict(range=[70,100], color='rgba(255,60,60,0.28)'),
+            ],
+            threshold=dict(
+                line=dict(color=risk_color, width=4),
+                thickness=0.85,
+                value=risk_score,
+            ),
+        ),
+        title=dict(
+            text=f"<b>RISK LEVEL: {risk_level}</b>",
+            font=dict(size=14, color=risk_color, family='Segoe UI'),
+        ),
         domain=dict(x=[0, 1], y=[0, 1]),
     ))
-
-    # ── Active filled arc from 0 → risk_score ────────────────────────
-    # Represent active portion vs remaining as a pie, same rotation trick
-    active_pct   = risk_score          # 0-100
-    inactive_pct = 100 - risk_score
-    fig.add_trace(go.Pie(
-        values=[active_pct if active_pct > 0 else 0.001, inactive_pct, 100],
-        hole=0.55,
-        rotation=180,
-        direction='clockwise',
-        marker=dict(
-            colors=[risk_color, 'rgba(0,0,0,0)', 'rgba(0,0,0,0)'],
-            line=dict(color='rgba(0,0,0,0)', width=0),
-        ),
-        showlegend=False,
-        textinfo='none',
-        hoverinfo='none',
-        domain=dict(x=[0.05, 0.95], y=[0.05, 0.95]),
-        opacity=0.85,
-    ))
-
-    # ── Needle drawn as a scatter line ───────────────────────────────
-    fig.add_trace(go.Scatter(
-        x=[0, needle_tip_x],
-        y=[0, needle_tip_y],
-        mode='lines',
-        line=dict(color=risk_color, width=4),
-        showlegend=False,
-        hoverinfo='none',
-        xaxis='x', yaxis='y',
-    ))
-
-    # Needle base dot
-    fig.add_trace(go.Scatter(
-        x=[0], y=[0],
-        mode='markers',
-        marker=dict(color=risk_color, size=16, line=dict(color='#0d1b2e', width=3)),
-        showlegend=False,
-        hoverinfo='none',
-        xaxis='x', yaxis='y',
-    ))
-
-    # ── Annotations: score + level ───────────────────────────────────
-    fig.add_annotation(
-        x=0, y=-0.35,
-        text=f"<b>{risk_score}/100</b>",
-        showarrow=False,
-        font=dict(size=32, color=risk_color, family='Segoe UI'),
-        xref='x', yref='y',
-    )
-    fig.add_annotation(
-        x=0, y=-0.55,
-        text=f"<b>RISK LEVEL: {risk_level}</b>",
-        showarrow=False,
-        font=dict(size=13, color=risk_color, family='Segoe UI'),
-        xref='x', yref='y',
-    )
-
-    # Tick labels on the arc
-    for score_val, label in [(0,'0'), (20,'20'), (40,'40'), (60,'60'), (80,'80'), (100,'100')]:
-        a = math.radians(180.0 - (score_val / 100.0) * 180.0)
-        lx = 0.92 * math.cos(a)
-        ly = 0.92 * math.sin(a)
-        fig.add_annotation(
-            x=lx, y=ly,
-            text=label,
-            showarrow=False,
-            font=dict(size=11, color='#7a9cc0'),
-            xref='x', yref='y',
-        )
 
     fig.update_layout(
         paper_bgcolor='rgba(0,0,0,0)',
         plot_bgcolor='rgba(0,0,0,0)',
-        height=300,
-        margin=dict(l=20, r=20, t=20, b=10),
-        xaxis=dict(
-            range=[-1.15, 1.15],
-            showgrid=False, zeroline=False, showticklabels=False,
-            scaleanchor='y',
-        ),
-        yaxis=dict(
-            range=[-0.75, 1.15],
-            showgrid=False, zeroline=False, showticklabels=False,
-        ),
+        font=dict(color='#e0e6f0'),
+        height=290,
+        margin=dict(l=30, r=30, t=30, b=10),
     )
     return fig
 
