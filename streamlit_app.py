@@ -722,7 +722,7 @@ if page == "🏠  Dashboard":
         hovermode='x unified',
         hoverlabel=dict(bgcolor='#0d1b2e', bordercolor='#7b5ea7', font=dict(color='#e0e6f0')),
     )
-    st.plotly_chart(fig_line, width="stretch")
+    st.plotly_chart(fig_line, use_container_width=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
 
@@ -754,7 +754,7 @@ if page == "🏠  Dashboard":
                                          orientation='v', x=1.02, y=0.5),
             margin=dict(l=10, r=60, t=10, b=10), height=320,
         )
-        st.plotly_chart(fig_donut, width="stretch")
+        st.plotly_chart(fig_donut, use_container_width=True)
 
     with d_right:
         st.markdown("<br>", unsafe_allow_html=True)
@@ -810,7 +810,7 @@ if page == "🏠  Dashboard":
         bargap=0.35,
         hoverlabel=dict(bgcolor='#0d1b2e', bordercolor='#7b5ea7', font=dict(color='#e0e6f0')),
     )
-    st.plotly_chart(fig_bar, width="stretch")
+    st.plotly_chart(fig_bar, use_container_width=True)
 
     a1, a2, a3, a4 = st.columns(4)
     attack_info = [
@@ -926,7 +926,7 @@ elif page == "🔍  Analyze Request":
 
         st.markdown("<br>", unsafe_allow_html=True)
 
-        gauge_col, detail_col = st.columns([1, 1])
+        gauge_col, detail_col = st.columns(2, gap="large")
         with gauge_col:
             st.markdown('<div class="section-header">📊 Threat Risk Meter</div>', unsafe_allow_html=True)
             fig_gauge = go.Figure(go.Indicator(
@@ -947,7 +947,7 @@ elif page == "🔍  Analyze Request":
             ))
             fig_gauge.update_layout(paper_bgcolor='rgba(0,0,0,0)', height=280,
                                      margin=dict(l=20, r=20, t=40, b=20), font=dict(color='#e0e6f0'))
-            st.plotly_chart(fig_gauge, width="stretch")
+            st.plotly_chart(fig_gauge, use_container_width=True)
 
         with detail_col:
             st.markdown('<div class="section-header">📋 Connection Summary</div>', unsafe_allow_html=True)
@@ -995,7 +995,7 @@ elif page == "🔍  Analyze Request":
                 df_feat.style.applymap(
                     lambda x: "color: #00d4ff" if x == "Direct" else "color: #ffaa00",
                     subset=["Category"]),
-                width="stretch", hide_index=True)
+                use_container_width=True, hide_index=True)
 
         st.markdown("<br>", unsafe_allow_html=True)
         if risk_level == "HIGH":
@@ -1171,7 +1171,7 @@ elif page == "📡  WiFi Scanner":
             yaxis=dict(title='Risk Score', gridcolor='#0d1b2e', range=[0, 115]),
             margin=dict(l=10, r=10, t=20, b=80), height=320,
         )
-        st.plotly_chart(fig_wifi, width="stretch")
+        st.plotly_chart(fig_wifi, use_container_width=True)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -1385,4 +1385,4 @@ elif page == "🔗  URL Scanner":
                     yaxis=dict(title='Risk Score (0-100)', gridcolor='#0d1b2e', range=[0, 115]),
                     margin=dict(l=10, r=10, t=20, b=80), height=300,
                 )
-                st.plotly_chart(fig_url, width="stretch")
+                st.plotly_chart(fig_url, use_container_width=True)
