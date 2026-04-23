@@ -1386,5 +1386,3 @@ elif page == "🔗  URL Scanner":
                     margin=dict(l=10, r=10, t=20, b=80), height=300,
                 )
                 st.plotly_chart(fig_url, width="stretch")
-
-                
