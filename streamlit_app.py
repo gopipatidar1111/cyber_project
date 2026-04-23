@@ -1043,27 +1043,42 @@ elif page == "📡  WiFi Scanner":
     </div>
     """, unsafe_allow_html=True)
 
+    st.markdown("---")
+    st.markdown("**Cloud Deployment Workaround:** Since cloud servers cannot access your local WiFi, you can run a local script to generate a JSON file of your networks and upload it here.")
+    uploaded_file = st.file_uploader("Upload local_wifi_scan.json", type=["json"])
+
     _, scan_col, _ = st.columns([1, 2, 1])
     with scan_col:
         scan_clicked = st.button("📡  SCAN NEARBY WiFi NETWORKS")
 
-    if scan_clicked:
-        with st.spinner("🔍 Scanning nearby WiFi networks..."):
-            time.sleep(1.0)
-            real_networks = scan_real_wifi()
-            used_real     = real_networks is not None and len(real_networks) > 0
+    if scan_clicked or uploaded_file is not None:
+        networks = None
+        if uploaded_file is not None:
+            import json
+            try:
+                networks = json.load(uploaded_file)
+                st.success(f"✅ Loaded {len(networks)} networks from uploaded file!")
+            except Exception:
+                st.error("Error reading the JSON file. Please make sure it's valid.")
+                networks = None
+        
+        if networks is None:
+            with st.spinner("🔍 Scanning nearby WiFi networks..."):
+                time.sleep(1.0)
+                real_networks = scan_real_wifi()
+                used_real     = real_networks is not None and len(real_networks) > 0
 
-        if used_real:
-            networks = real_networks
-            st.success(f"✅ **Real scan complete** — {len(networks)} networks detected from your device", icon="📡")
-        else:
-            networks = generate_simulated_networks()
-            st.info(
-                "ℹ️ **Simulated scan** — Real WiFi scan unavailable on this environment. "
-                "On Windows, run the terminal as **Administrator** and ensure WiFi is enabled. "
-                "Each simulated scan generates fresh randomized results.",
-                icon="💡"
-            )
+            if used_real:
+                networks = real_networks
+                st.success(f"✅ **Real scan complete** — {len(networks)} networks detected from your device", icon="📡")
+            else:
+                networks = generate_simulated_networks()
+                st.info(
+                    "ℹ️ **Simulated scan** — Real WiFi scan unavailable on this environment. "
+                    "On Windows, run the terminal as **Administrator** and ensure WiFi is enabled. "
+                    "Each simulated scan generates fresh randomized results.",
+                    icon="💡"
+                )
 
         st.markdown(f"**{len(networks)} networks found**")
         st.markdown('<div class="section-header">Network Threat Analysis</div>', unsafe_allow_html=True)
