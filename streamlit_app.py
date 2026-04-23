@@ -269,90 +269,133 @@ def get_risk_level(score, label=None):
 # ─────────────────────────────────────────────
 def render_gauge(risk_score, risk_level, risk_color):
     """
-    Renders a precise SVG semicircle gauge.
-    0 = left (180°), 100 = right (0°).
-    Needle angle = 180 - (score/100 * 180) degrees from positive X axis.
+    Renders a proper Plotly semicircle gauge with a needle
+    that always points to the exact risk score position.
+    Uses needle drawn via scatter trace so it renders correctly.
     """
-    # Gauge geometry
-    cx, cy, r = 200, 170, 130
-    # Score 0 → angle 180° (left), score 100 → angle 0° (right)
+    # Needle angle: score 0 → 180° (left), score 100 → 0° (right)
     angle_deg = 180.0 - (risk_score / 100.0) * 180.0
     angle_rad = math.radians(angle_deg)
-    nx = cx + r * math.cos(angle_rad)
-    ny = cy - r * math.sin(angle_rad)  # SVG y-axis is inverted
 
-    # Needle base points (small triangle)
-    base_len = 10
-    perp_rad = angle_rad + math.pi / 2
-    bx1 = cx + base_len * math.cos(perp_rad)
-    by1 = cy - base_len * math.sin(perp_rad)
-    bx2 = cx - base_len * math.cos(perp_rad)
-    by2 = cy + base_len * math.sin(perp_rad)
+    # Needle tip and base coords (unit circle, Plotly uses x/y in [-1,1] domain)
+    needle_length = 0.75
+    needle_tip_x  = needle_length * math.cos(angle_rad)
+    needle_tip_y  = needle_length * math.sin(angle_rad)
 
-    # Arc segments: LOW (0-40) green, MEDIUM (40-70) yellow, HIGH (70-100) red
-    def arc_path(start_score, end_score, outer_r, inner_r):
-        a1 = math.radians(180.0 - (start_score / 100.0) * 180.0)
-        a2 = math.radians(180.0 - (end_score   / 100.0) * 180.0)
-        ox1 = cx + outer_r * math.cos(a1)
-        oy1 = cy - outer_r * math.sin(a1)
-        ox2 = cx + outer_r * math.cos(a2)
-        oy2 = cy - outer_r * math.sin(a2)
-        ix1 = cx + inner_r * math.cos(a2)
-        iy1 = cy - inner_r * math.sin(a2)
-        ix2 = cx + inner_r * math.cos(a1)
-        iy2 = cy - inner_r * math.sin(a1)
-        return f"M {ox1:.2f} {oy1:.2f} A {outer_r} {outer_r} 0 0 0 {ox2:.2f} {oy2:.2f} L {ix1:.2f} {iy1:.2f} A {inner_r} {inner_r} 0 0 1 {ix2:.2f} {iy2:.2f} Z"
+    # Perpendicular base points (small width at centre)
+    base_w = 0.03
+    perp   = angle_rad + math.pi / 2
+    base_x1 = base_w * math.cos(perp)
+    base_y1 = base_w * math.sin(perp)
 
-    outer_r, inner_r = 130, 90
+    fig = go.Figure()
 
-    svg = f"""
-    <div style="display:flex; flex-direction:column; align-items:center; justify-content:center;">
-    <svg viewBox="0 0 400 210" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:420px;">
-      <!-- Background track -->
-      <path d="{arc_path(0, 100, outer_r+4, inner_r-4)}" fill="#1a2a3a" />
+    # ── Gauge arc (background + coloured zones) ──────────────────────
+    fig.add_trace(go.Pie(
+        values=[40, 30, 30],                        # LOW / MED / HIGH zones
+        hole=0.5,
+        rotation=180,                               # start at left (0 score)
+        direction='clockwise',
+        marker=dict(
+            colors=[
+                'rgba(0,200,100,0.30)',
+                'rgba(255,170,0,0.30)',
+                'rgba(255,60,60,0.30)',
+            ],
+            line=dict(color='#0a0e1a', width=2),
+        ),
+        showlegend=False,
+        textinfo='none',
+        hoverinfo='none',
+        domain=dict(x=[0, 1], y=[0, 1]),
+    ))
 
-      <!-- Color zones -->
-      <path d="{arc_path(0,  40,  outer_r, inner_r)}" fill="rgba(0,200,100,0.35)" />
-      <path d="{arc_path(40, 70,  outer_r, inner_r)}" fill="rgba(255,170,0,0.35)" />
-      <path d="{arc_path(70, 100, outer_r, inner_r)}" fill="rgba(255,60,60,0.35)" />
+    # ── Active filled arc from 0 → risk_score ────────────────────────
+    # Represent active portion vs remaining as a pie, same rotation trick
+    active_pct   = risk_score          # 0-100
+    inactive_pct = 100 - risk_score
+    fig.add_trace(go.Pie(
+        values=[active_pct if active_pct > 0 else 0.001, inactive_pct, 100],
+        hole=0.55,
+        rotation=180,
+        direction='clockwise',
+        marker=dict(
+            colors=[risk_color, 'rgba(0,0,0,0)', 'rgba(0,0,0,0)'],
+            line=dict(color='rgba(0,0,0,0)', width=0),
+        ),
+        showlegend=False,
+        textinfo='none',
+        hoverinfo='none',
+        domain=dict(x=[0.05, 0.95], y=[0.05, 0.95]),
+        opacity=0.85,
+    ))
 
-      <!-- Active fill up to current score -->
-      <path d="{arc_path(0, risk_score, outer_r, inner_r)}" fill="{risk_color}" opacity="0.85"/>
+    # ── Needle drawn as a scatter line ───────────────────────────────
+    fig.add_trace(go.Scatter(
+        x=[0, needle_tip_x],
+        y=[0, needle_tip_y],
+        mode='lines',
+        line=dict(color=risk_color, width=4),
+        showlegend=False,
+        hoverinfo='none',
+        xaxis='x', yaxis='y',
+    ))
 
-      <!-- Tick marks -->
-      {''.join([
-          f'<line x1="{cx + (inner_r-6)*math.cos(math.radians(180-(i/100)*180)):.2f}" '
-          f'y1="{cy - (inner_r-6)*math.sin(math.radians(180-(i/100)*180)):.2f}" '
-          f'x2="{cx + (outer_r+6)*math.cos(math.radians(180-(i/100)*180)):.2f}" '
-          f'y2="{cy - (outer_r+6)*math.sin(math.radians(180-(i/100)*180)):.2f}" '
-          f'stroke="#0a0e1a" stroke-width="2.5"/>'
-          for i in [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
-      ])}
+    # Needle base dot
+    fig.add_trace(go.Scatter(
+        x=[0], y=[0],
+        mode='markers',
+        marker=dict(color=risk_color, size=16, line=dict(color='#0d1b2e', width=3)),
+        showlegend=False,
+        hoverinfo='none',
+        xaxis='x', yaxis='y',
+    ))
 
-      <!-- Tick labels -->
-      <text x="{cx + (outer_r+22)*math.cos(math.radians(180)):.2f}" y="{cy - (outer_r+22)*math.sin(math.radians(180)):.2f}" text-anchor="middle" fill="#7a9cc0" font-size="13">0</text>
-      <text x="{cx + (outer_r+22)*math.cos(math.radians(108)):.2f}" y="{cy - (outer_r+22)*math.sin(math.radians(108)):.2f}" text-anchor="middle" fill="#7a9cc0" font-size="13">20</text>
-      <text x="{cx + (outer_r+22)*math.cos(math.radians(54)):.2f}"  y="{cy - (outer_r+22)*math.sin(math.radians(54)):.2f}"  text-anchor="middle" fill="#ffaa00" font-size="13">40</text>
-      <text x="{cx + (outer_r+22)*math.cos(math.radians(0)):.2f}"   y="{cy - (outer_r+22)*math.sin(math.radians(0)):.2f}"   text-anchor="middle" fill="#7a9cc0" font-size="13">100</text>
-      <text x="{cx + (outer_r+22)*math.cos(math.radians(126)):.2f}" y="{cy - (outer_r+22)*math.sin(math.radians(126)):.2f}" text-anchor="middle" fill="#7a9cc0" font-size="13">10</text>
-      <text x="{cx + (outer_r+22)*math.cos(math.radians(27)):.2f}"  y="{cy - (outer_r+22)*math.sin(math.radians(27)):.2f}"  text-anchor="middle" fill="#ff4444" font-size="13">70</text>
+    # ── Annotations: score + level ───────────────────────────────────
+    fig.add_annotation(
+        x=0, y=-0.35,
+        text=f"<b>{risk_score}/100</b>",
+        showarrow=False,
+        font=dict(size=32, color=risk_color, family='Segoe UI'),
+        xref='x', yref='y',
+    )
+    fig.add_annotation(
+        x=0, y=-0.55,
+        text=f"<b>RISK LEVEL: {risk_level}</b>",
+        showarrow=False,
+        font=dict(size=13, color=risk_color, family='Segoe UI'),
+        xref='x', yref='y',
+    )
 
-      <!-- Needle -->
-      <polygon points="{nx:.2f},{ny:.2f} {bx1:.2f},{by1:.2f} {bx2:.2f},{by2:.2f}"
-               fill="{risk_color}" opacity="0.95" />
-      <!-- Needle center cap -->
-      <circle cx="{cx}" cy="{cy}" r="14" fill="#0d1b2e" stroke="{risk_color}" stroke-width="3"/>
-      <circle cx="{cx}" cy="{cy}" r="6"  fill="{risk_color}"/>
+    # Tick labels on the arc
+    for score_val, label in [(0,'0'), (20,'20'), (40,'40'), (60,'60'), (80,'80'), (100,'100')]:
+        a = math.radians(180.0 - (score_val / 100.0) * 180.0)
+        lx = 0.92 * math.cos(a)
+        ly = 0.92 * math.sin(a)
+        fig.add_annotation(
+            x=lx, y=ly,
+            text=label,
+            showarrow=False,
+            font=dict(size=11, color='#7a9cc0'),
+            xref='x', yref='y',
+        )
 
-      <!-- Score text -->
-      <text x="{cx}" y="{cy+40}" text-anchor="middle" fill="{risk_color}"
-            font-size="36" font-weight="800" font-family="Segoe UI">{risk_score}/100</text>
-      <text x="{cx}" y="{cy+62}" text-anchor="middle" fill="{risk_color}"
-            font-size="14" font-weight="700" letter-spacing="2" font-family="Segoe UI">RISK LEVEL: {risk_level}</text>
-    </svg>
-    </div>
-    """
-    return svg
+    fig.update_layout(
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)',
+        height=300,
+        margin=dict(l=20, r=20, t=20, b=10),
+        xaxis=dict(
+            range=[-1.15, 1.15],
+            showgrid=False, zeroline=False, showticklabels=False,
+            scaleanchor='y',
+        ),
+        yaxis=dict(
+            range=[-0.75, 1.15],
+            showgrid=False, zeroline=False, showticklabels=False,
+        ),
+    )
+    return fig
 
 
 # ─────────────────────────────────────────────
@@ -755,9 +798,9 @@ elif page == "🔍  Analyze Request":
 
         with gauge_col:
             st.markdown('<div class="section-header">📊 Threat Risk Meter</div>', unsafe_allow_html=True)
-            # Render precise SVG gauge
-            gauge_svg = render_gauge(risk_score, risk_level, risk_color)
-            st.markdown(gauge_svg, unsafe_allow_html=True)
+            # Render precise Plotly semicircle gauge
+            fig_gauge = render_gauge(risk_score, risk_level, risk_color)
+            st.plotly_chart(fig_gauge, use_container_width=True)
 
         with detail_col:
             st.markdown('<div class="section-header">📋 Connection Summary</div>', unsafe_allow_html=True)
