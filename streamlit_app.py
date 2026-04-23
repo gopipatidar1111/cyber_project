@@ -4,22 +4,9 @@
   Streamlit App — 4 Pages
   Page 1: Dashboard (Overview)
   Page 2: Analyze Network Activity (Input Form)
-  Page 3: WiFi Scanner (Real device scan + fallback)
+  Page 3: WiFi Scanner (JSON Upload Only)
   Page 4: URL Scanner
 =======================================================
-
-How to run:
-    pip install streamlit plotly joblib scikit-learn pandas numpy
-    streamlit run streamlit_app.py
-
-    For real WiFi scan on Windows:
-    → Run terminal as Administrator, then: streamlit run streamlit_app.py
-
-Folder structure expected:
-    streamlit_app.py
-    model.pkl
-    scaler.pkl
-    encoders.pkl
 """
 
 import streamlit as st
@@ -30,9 +17,8 @@ import plotly.express as px
 import joblib
 import os
 import time
-import subprocess
-import platform
 import re
+import math
 
 # ─────────────────────────────────────────────
 #  PAGE CONFIG
@@ -279,261 +265,99 @@ def get_risk_level(score, label=None):
 
 
 # ─────────────────────────────────────────────
-#  WIFI SCANNER FUNCTIONS
+#  CUSTOM SVG GAUGE — always correct position
 # ─────────────────────────────────────────────
-
-def get_linux_wifi_interface():
-    """Detect WiFi interface name on Linux."""
-    try:
-        result = subprocess.run(['iwconfig'], capture_output=True, text=True, timeout=5)
-        for line in result.stdout.split('\n'):
-            if 'IEEE 802.11' in line or 'ESSID' in line:
-                return line.split()[0]
-    except Exception:
-        pass
-    return None
-
-
-def parse_windows_wifi(raw):
-    """Parse Windows netsh wlan output into list of network dicts."""
-    networks    = []
-    current     = {}
-    bssid_count = 0
-
-    for line in raw.split('\n'):
-        line = line.strip()
-
-        if re.match(r'^SSID\s+\d+\s*:', line) and 'BSSID' not in line:
-            if current.get('ssid'):
-                networks.append(current)
-            current     = {}
-            bssid_count = 0
-            parts = line.split(':', 1)
-            if len(parts) == 2:
-                current['ssid'] = parts[1].strip()
-
-        elif 'BSSID' in line and bssid_count == 0:
-            # BSSID format: AA:BB:CC:DD:EE:FF — need all colons
-            m = re.search(r'([0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5})', line)
-            if m:
-                current['bssid'] = m.group(1).upper()
-                bssid_count += 1
-
-        elif 'Signal' in line:
-            parts = line.split(':', 1)
-            if len(parts) == 2:
-                try:
-                    current['signal'] = int(parts[1].strip().replace('%', ''))
-                except Exception:
-                    current['signal'] = 50
-
-        elif 'Authentication' in line:
-            parts = line.split(':', 1)
-            if len(parts) == 2:
-                current['security'] = parts[1].strip()
-
-        elif 'Encryption' in line and 'encryption' not in current:
-            parts = line.split(':', 1)
-            if len(parts) == 2:
-                current['encryption'] = parts[1].strip()
-
-    if current.get('ssid'):
-        networks.append(current)
-
-    for n in networks:
-        n.setdefault('bssid',      'N/A')
-        n.setdefault('signal',     50)
-        n.setdefault('security',   'Unknown')
-        n.setdefault('encryption', 'Unknown')
-
-    return [n for n in networks if n.get('ssid')]
-
-
-def parse_linux_nmcli(raw):
-    """Parse nmcli -t output."""
-    networks = []
-    for line in raw.strip().split('\n'):
-        parts = re.split(r'(?<!\\):', line)
-        if len(parts) >= 4:
-            ssid     = parts[0].replace('\\:', ':').strip()
-            bssid    = parts[1].replace('\\:', ':').strip()
-            signal   = parts[2].strip()
-            security = parts[3].replace('\\:', ':').strip()
-            if not ssid:
-                continue
-            try:
-                sig_val = int(signal)
-            except Exception:
-                sig_val = 50
-            networks.append({
-                'ssid':       ssid,
-                'bssid':      bssid or 'N/A',
-                'signal':     sig_val,
-                'security':   security if security else 'Open',
-                'encryption': 'CCMP' if 'WPA' in security else 'None',
-            })
-    return networks
-
-
-def parse_linux_iwlist(raw):
-    """Parse iwlist scan output."""
-    networks = []
-    current  = {}
-
-    for line in raw.split('\n'):
-        line = line.strip()
-        if line.startswith('Cell'):
-            if current.get('ssid'):
-                networks.append(current)
-            current = {}
-            m = re.search(r'Address:\s*([0-9A-F:]+)', line, re.IGNORECASE)
-            if m:
-                current['bssid'] = m.group(1)
-        elif 'ESSID:' in line:
-            m = re.search(r'ESSID:"([^"]*)"', line)
-            if m:
-                current['ssid'] = m.group(1)
-        elif 'Signal level' in line:
-            m = re.search(r'Signal level[=:](-?\d+)', line)
-            if m:
-                dbm = int(m.group(1))
-                pct = max(0, min(100, 2 * (dbm + 100)))
-                current['signal'] = pct
-        elif 'Encryption key:' in line:
-            current['encryption'] = 'CCMP' if 'on' in line.lower() else 'None'
-        elif 'IE: WPA' in line or 'WPA2' in line:
-            current['security'] = 'WPA2-Personal'
-
-    if current.get('ssid'):
-        networks.append(current)
-
-    for n in networks:
-        n.setdefault('bssid',      'N/A')
-        n.setdefault('signal',     50)
-        n.setdefault('security',   'WPA2-Personal' if n.get('encryption') == 'CCMP' else 'Open')
-        n.setdefault('encryption', 'Unknown')
-
-    return [n for n in networks if n.get('ssid')]
-
-
-def scan_real_wifi():
+def render_gauge(risk_score, risk_level, risk_color):
     """
-    Scan actual device WiFi networks.
-    Supports Windows (netsh) and Linux (nmcli / iwlist).
-    Returns list of network dicts, or None if scan fails.
+    Renders a precise SVG semicircle gauge.
+    0 = left (180°), 100 = right (0°).
+    Needle angle = 180 - (score/100 * 180) degrees from positive X axis.
     """
-    system = platform.system()
+    # Gauge geometry
+    cx, cy, r = 200, 170, 130
+    # Score 0 → angle 180° (left), score 100 → angle 0° (right)
+    angle_deg = 180.0 - (risk_score / 100.0) * 180.0
+    angle_rad = math.radians(angle_deg)
+    nx = cx + r * math.cos(angle_rad)
+    ny = cy - r * math.sin(angle_rad)  # SVG y-axis is inverted
 
-    if system == "Windows":
-        try:
-            result = subprocess.run(
-                ['netsh', 'wlan', 'show', 'networks', 'mode=bssid'],
-                capture_output=True, text=True, timeout=10,
-                encoding='utf-8', errors='ignore'
-            )
-            if result.returncode == 0 and result.stdout.strip():
-                networks = parse_windows_wifi(result.stdout)
-                if networks:
-                    return networks
-        except Exception:
-            pass
-        return None
+    # Needle base points (small triangle)
+    base_len = 10
+    perp_rad = angle_rad + math.pi / 2
+    bx1 = cx + base_len * math.cos(perp_rad)
+    by1 = cy - base_len * math.sin(perp_rad)
+    bx2 = cx - base_len * math.cos(perp_rad)
+    by2 = cy + base_len * math.sin(perp_rad)
 
-    elif system == "Linux":
-        # Try nmcli first
-        try:
-            result = subprocess.run(
-                ['nmcli', '-t', '-f', 'SSID,BSSID,SIGNAL,SECURITY', 'dev', 'wifi', 'list'],
-                capture_output=True, text=True, timeout=10
-            )
-            if result.returncode == 0 and result.stdout.strip():
-                networks = parse_linux_nmcli(result.stdout)
-                if networks:
-                    return networks
-        except Exception:
-            pass
+    # Arc segments: LOW (0-40) green, MEDIUM (40-70) yellow, HIGH (70-100) red
+    def arc_path(start_score, end_score, outer_r, inner_r):
+        a1 = math.radians(180.0 - (start_score / 100.0) * 180.0)
+        a2 = math.radians(180.0 - (end_score   / 100.0) * 180.0)
+        ox1 = cx + outer_r * math.cos(a1)
+        oy1 = cy - outer_r * math.sin(a1)
+        ox2 = cx + outer_r * math.cos(a2)
+        oy2 = cy - outer_r * math.sin(a2)
+        ix1 = cx + inner_r * math.cos(a2)
+        iy1 = cy - inner_r * math.sin(a2)
+        ix2 = cx + inner_r * math.cos(a1)
+        iy2 = cy - inner_r * math.sin(a1)
+        return f"M {ox1:.2f} {oy1:.2f} A {outer_r} {outer_r} 0 0 0 {ox2:.2f} {oy2:.2f} L {ix1:.2f} {iy1:.2f} A {inner_r} {inner_r} 0 0 1 {ix2:.2f} {iy2:.2f} Z"
 
-        # Fallback: iwlist
-        try:
-            iface = get_linux_wifi_interface()
-            if iface:
-                result = subprocess.run(
-                    ['sudo', 'iwlist', iface, 'scan'],
-                    capture_output=True, text=True, timeout=15
-                )
-                if result.returncode == 0:
-                    networks = parse_linux_iwlist(result.stdout)
-                    if networks:
-                        return networks
-        except Exception:
-            pass
-        return None
+    outer_r, inner_r = 130, 90
 
-    return None  # macOS or unsupported
+    svg = f"""
+    <div style="display:flex; flex-direction:column; align-items:center; justify-content:center;">
+    <svg viewBox="0 0 400 210" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:420px;">
+      <!-- Background track -->
+      <path d="{arc_path(0, 100, outer_r+4, inner_r-4)}" fill="#1a2a3a" />
 
+      <!-- Color zones -->
+      <path d="{arc_path(0,  40,  outer_r, inner_r)}" fill="rgba(0,200,100,0.35)" />
+      <path d="{arc_path(40, 70,  outer_r, inner_r)}" fill="rgba(255,170,0,0.35)" />
+      <path d="{arc_path(70, 100, outer_r, inner_r)}" fill="rgba(255,60,60,0.35)" />
 
-def generate_simulated_networks():
+      <!-- Active fill up to current score -->
+      <path d="{arc_path(0, risk_score, outer_r, inner_r)}" fill="{risk_color}" opacity="0.85"/>
+
+      <!-- Tick marks -->
+      {''.join([
+          f'<line x1="{cx + (inner_r-6)*math.cos(math.radians(180-(i/100)*180)):.2f}" '
+          f'y1="{cy - (inner_r-6)*math.sin(math.radians(180-(i/100)*180)):.2f}" '
+          f'x2="{cx + (outer_r+6)*math.cos(math.radians(180-(i/100)*180)):.2f}" '
+          f'y2="{cy - (outer_r+6)*math.sin(math.radians(180-(i/100)*180)):.2f}" '
+          f'stroke="#0a0e1a" stroke-width="2.5"/>'
+          for i in [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
+      ])}
+
+      <!-- Tick labels -->
+      <text x="{cx + (outer_r+22)*math.cos(math.radians(180)):.2f}" y="{cy - (outer_r+22)*math.sin(math.radians(180)):.2f}" text-anchor="middle" fill="#7a9cc0" font-size="13">0</text>
+      <text x="{cx + (outer_r+22)*math.cos(math.radians(108)):.2f}" y="{cy - (outer_r+22)*math.sin(math.radians(108)):.2f}" text-anchor="middle" fill="#7a9cc0" font-size="13">20</text>
+      <text x="{cx + (outer_r+22)*math.cos(math.radians(54)):.2f}"  y="{cy - (outer_r+22)*math.sin(math.radians(54)):.2f}"  text-anchor="middle" fill="#ffaa00" font-size="13">40</text>
+      <text x="{cx + (outer_r+22)*math.cos(math.radians(0)):.2f}"   y="{cy - (outer_r+22)*math.sin(math.radians(0)):.2f}"   text-anchor="middle" fill="#7a9cc0" font-size="13">100</text>
+      <text x="{cx + (outer_r+22)*math.cos(math.radians(126)):.2f}" y="{cy - (outer_r+22)*math.sin(math.radians(126)):.2f}" text-anchor="middle" fill="#7a9cc0" font-size="13">10</text>
+      <text x="{cx + (outer_r+22)*math.cos(math.radians(27)):.2f}"  y="{cy - (outer_r+22)*math.sin(math.radians(27)):.2f}"  text-anchor="middle" fill="#ff4444" font-size="13">70</text>
+
+      <!-- Needle -->
+      <polygon points="{nx:.2f},{ny:.2f} {bx1:.2f},{by1:.2f} {bx2:.2f},{by2:.2f}"
+               fill="{risk_color}" opacity="0.95" />
+      <!-- Needle center cap -->
+      <circle cx="{cx}" cy="{cy}" r="14" fill="#0d1b2e" stroke="{risk_color}" stroke-width="3"/>
+      <circle cx="{cx}" cy="{cy}" r="6"  fill="{risk_color}"/>
+
+      <!-- Score text -->
+      <text x="{cx}" y="{cy+40}" text-anchor="middle" fill="{risk_color}"
+            font-size="36" font-weight="800" font-family="Segoe UI">{risk_score}/100</text>
+      <text x="{cx}" y="{cy+62}" text-anchor="middle" fill="{risk_color}"
+            font-size="14" font-weight="700" letter-spacing="2" font-family="Segoe UI">RISK LEVEL: {risk_level}</text>
+    </svg>
+    </div>
     """
-    Fallback: randomized realistic networks when real scan is not possible.
-    Uses timestamp seed so every scan gives fresh results.
-    """
-    seed = int(time.time()) % 100000
-    rng  = np.random.default_rng(seed)
-
-    safe_networks = [
-        {'ssid': 'HomeNetwork_5G',      'security': 'WPA3-Personal',  'encryption': 'GCMP'},
-        {'ssid': 'NETGEAR_Secure_2.4',  'security': 'WPA2-Personal',  'encryption': 'CCMP'},
-        {'ssid': 'Office_Corp_WiFi',    'security': 'WPA2-Enterprise', 'encryption': 'CCMP'},
-        {'ssid': 'Jio_Fiber_Home',      'security': 'WPA2-Personal',  'encryption': 'CCMP'},
-        {'ssid': 'Airtel_Xstream_5GHz', 'security': 'WPA3-Personal',  'encryption': 'GCMP'},
-        {'ssid': 'BSNL_Broadband_2G',   'security': 'WPA2-Personal',  'encryption': 'CCMP'},
-        {'ssid': 'MyHome_WiFi_Secured',  'security': 'WPA2-Personal',  'encryption': 'CCMP'},
-        {'ssid': 'TP-Link_AC1200',       'security': 'WPA2-Personal',  'encryption': 'CCMP'},
-    ]
-    suspicious_networks = [
-        {'ssid': 'Free_Public_WiFi',   'security': 'Open', 'encryption': 'None'},
-        {'ssid': 'Free_Internet_Here', 'security': 'Open', 'encryption': 'None'},
-        {'ssid': 'TP-Link_Guest',      'security': 'Open', 'encryption': 'None'},
-        {'ssid': 'HotelGuest_WiFi',    'security': 'Open', 'encryption': 'None'},
-        {'ssid': 'Airport_FreeWiFi',   'security': 'Open', 'encryption': 'None'},
-        {'ssid': 'D-Link_Default',     'security': 'WEP',  'encryption': 'WEP'},
-        {'ssid': 'Linksys_Open',       'security': 'Open', 'encryption': 'None'},
-        {'ssid': 'CafeWiFi_Unsecured', 'security': 'Open', 'encryption': 'None'},
-    ]
-    dangerous_networks = [
-        {'ssid': 'HomeNetwork_5G',      'security': 'WPA2-Personal', 'encryption': 'CCMP'},
-        {'ssid': 'Office_Corp_WiFi',    'security': 'Open',          'encryption': 'None'},
-        {'ssid': 'PayPal_Verify_Login', 'security': 'Open',          'encryption': 'None'},
-        {'ssid': 'BankSecure_Update',   'security': 'WPA2-Personal', 'encryption': 'CCMP'},
-        {'ssid': 'HackNet_v2',          'security': 'Open',          'encryption': 'None'},
-        {'ssid': 'WIN_FREE_PRIZE_NOW',  'security': 'Open',          'encryption': 'None'},
-    ]
-
-    n_safe = int(rng.integers(3, 6))
-    n_susp = int(rng.integers(1, 4))
-    n_dang = int(rng.integers(1, 3))
-
-    chosen = (
-        [safe_networks[i]       for i in rng.choice(len(safe_networks),       n_safe, replace=False)] +
-        [suspicious_networks[i] for i in rng.choice(len(suspicious_networks), n_susp, replace=False)] +
-        [dangerous_networks[i]  for i in rng.choice(len(dangerous_networks),  n_dang, replace=False)]
-    )
-    rng.shuffle(chosen)
-
-    def random_bssid(rng):
-        return ':'.join(f'{int(rng.integers(0, 256)):02X}' for _ in range(6))
-
-    result = []
-    for net in chosen:
-        net = dict(net)
-        net['bssid']  = random_bssid(rng)
-        net['signal'] = int(rng.integers(70, 98)) if (
-            net['security'] == 'Open' or any(w in net['ssid'] for w in ['Hack', 'WIN', 'Prize'])
-        ) else int(rng.integers(35, 85))
-        result.append(net)
-    return result
+    return svg
 
 
+# ─────────────────────────────────────────────
+#  WiFi RISK
+# ─────────────────────────────────────────────
 def compute_wifi_risk(network, all_networks):
     risk  = 0
     flags = []
@@ -926,31 +750,19 @@ elif page == "🔍  Analyze Request":
 
         st.markdown("<br>", unsafe_allow_html=True)
 
+        # ── GAUGE + SUMMARY side by side ──────────────────────────────
         gauge_col, detail_col = st.columns(2, gap="large")
+
         with gauge_col:
             st.markdown('<div class="section-header">📊 Threat Risk Meter</div>', unsafe_allow_html=True)
-            fig_gauge = go.Figure(go.Indicator(
-                mode="gauge+number", value=risk_score,
-                number=dict(font=dict(size=40, color=risk_color), suffix="/100"),
-                gauge=dict(
-                    axis=dict(range=[0, 100], tickcolor='#7a9cc0', tickfont=dict(color='#7a9cc0')),
-                    bar=dict(color=risk_color, thickness=0.25),
-                    bgcolor='#0d1b2e', bordercolor='#1e3a5f',
-                    steps=[
-                        dict(range=[0,  40], color='rgba(0,255,136,0.15)'),
-                        dict(range=[40, 70], color='rgba(255,170,0,0.15)'),
-                        dict(range=[70,100], color='rgba(255,68,68,0.2)'),
-                    ],
-                    threshold=dict(line=dict(color=risk_color, width=3), thickness=0.8, value=risk_score),
-                ),
-                title=dict(text=f"RISK LEVEL: <b>{risk_level}</b>", font=dict(size=16, color=risk_color)),
-            ))
-            fig_gauge.update_layout(paper_bgcolor='rgba(0,0,0,0)', height=280,
-                                     margin=dict(l=20, r=20, t=40, b=20), font=dict(color='#e0e6f0'))
-            st.plotly_chart(fig_gauge, use_container_width=True)
+            # Render precise SVG gauge
+            gauge_svg = render_gauge(risk_score, risk_level, risk_color)
+            st.markdown(gauge_svg, unsafe_allow_html=True)
 
         with detail_col:
             st.markdown('<div class="section-header">📋 Connection Summary</div>', unsafe_allow_html=True)
+            # Extra top padding so summary aligns with gauge vertically
+            st.markdown("<div style='padding-top:28px;'>", unsafe_allow_html=True)
             details = {
                 "Protocol": protocol, "Service": service.upper(), "Flag": flag,
                 "Duration": f"{duration}s", "Src Bytes": f"{src_bytes:,}",
@@ -959,11 +771,12 @@ elif page == "🔍  Analyze Request":
             }
             for k, v in details.items():
                 st.markdown(f"""
-                <div style='display:flex;justify-content:space-between;padding:7px 0;
-                            border-bottom:1px solid #1e3a5f;font-size:0.9rem;'>
+                <div style='display:flex;justify-content:space-between;padding:9px 0;
+                            border-bottom:1px solid #1e3a5f;font-size:0.92rem;'>
                     <span style='color:#7a9cc0;'>{k}</span>
                     <span style='color:#e0e6f0;font-weight:600;'>{v}</span>
                 </div>""", unsafe_allow_html=True)
+            st.markdown("</div>", unsafe_allow_html=True)
 
         st.markdown("<br>", unsafe_allow_html=True)
         st.markdown('<div class="section-header">🤖 Automated Response Recommendation</div>', unsafe_allow_html=True)
@@ -975,10 +788,10 @@ elif page == "🔍  Analyze Request":
             "LOW":    ("action-block-low",    "✅ NO ACTION REQUIRED", "Connection appears safe. Continue normal operations."),
         }
         for col, (level, (css, action_title, action_desc)) in zip([action_col1, action_col2, action_col3], actions.items()):
-            active = "border: 3px solid" if level == risk_level else "opacity: 0.35;"
+            active_style = f"border: 3px solid; box-shadow: 0 0 18px {'#ff444488' if level=='HIGH' else '#ffaa0088' if level=='MEDIUM' else '#00ff8888'};" if level == risk_level else "opacity: 0.35;"
             with col:
                 st.markdown(f"""
-                <div class="action-block {css}" style="{active}">
+                <div class="action-block {css}" style="{active_style}">
                     <div style="font-size:1.3rem;margin-bottom:8px;">{action_title}</div>
                     <div style="font-size:0.78rem;font-weight:400;color:#aac;">{action_desc}</div>
                 </div>""", unsafe_allow_html=True)
@@ -1022,64 +835,57 @@ elif page == "🔍  Analyze Request":
 
 
 # ═══════════════════════════════════════════════════════════
-#  PAGE 3 — WiFi THREAT SCANNER
+#  PAGE 3 — WiFi THREAT SCANNER  (JSON upload ONLY)
 # ═══════════════════════════════════════════════════════════
 elif page == "📡  WiFi Scanner":
 
     st.markdown('<div class="page-title">📡 WiFi THREAT SCANNER</div>', unsafe_allow_html=True)
-    st.markdown('<div class="page-subtitle">Scan nearby WiFi networks and detect rogue access points & threats</div><br>', unsafe_allow_html=True)
+    st.markdown('<div class="page-subtitle">Upload your local WiFi scan JSON to detect rogue access points & threats</div><br>', unsafe_allow_html=True)
 
     st.markdown("""
     <div style='background:#0d1b2e;border:1px solid #1e3a5f;border-radius:12px;
                 padding:16px 20px;margin-bottom:20px;font-size:0.88rem;color:#7a9cc0;'>
         <b style='color:#00d4ff;'>How WiFi Threat Detection Works</b><br><br>
-        Each nearby network is analyzed for:
+        Each network in your scan is analyzed for:
         <span style='color:#ffaa00;'>Open Security</span> |
         <span style='color:#ff4444;'>Evil Twin / Duplicate SSID</span> |
         <span style='color:#ff7722;'>Suspicious Names</span> |
         <span style='color:#cc44ff;'>Weak Encryption (WEP)</span><br><br>
-        <b style='color:#ffaa00;'>⚠️ Windows tip:</b> For real WiFi scan, run your terminal
-        as <b>Administrator</b> before starting Streamlit.
+        <b style='color:#00d4ff;'>📁 How to generate your scan file:</b><br>
+        Run the local scanner script on your machine, then upload the resulting
+        <b>local_wifi_scan.json</b> file below. The JSON should be a list of network
+        objects with fields: <code>ssid</code>, <code>bssid</code>, <code>signal</code>,
+        <code>security</code>, <code>encryption</code>.
     </div>
     """, unsafe_allow_html=True)
 
-    st.markdown("---")
-    st.markdown("**Cloud Deployment Workaround:** Since cloud servers cannot access your local WiFi, you can run a local script to generate a JSON file of your networks and upload it here.")
-    uploaded_file = st.file_uploader("Upload local_wifi_scan.json", type=["json"])
+    # ── JSON Upload only ─────────────────────────────────────────────
+    st.markdown('<div class="section-header">📂 Upload WiFi Scan File</div>', unsafe_allow_html=True)
+    uploaded_file = st.file_uploader(
+        "Upload local_wifi_scan.json",
+        type=["json"],
+        help="Generate this file by running the local WiFi scanner script on your device.",
+    )
 
-    _, scan_col, _ = st.columns([1, 2, 1])
-    with scan_col:
-        scan_clicked = st.button("📡  SCAN NEARBY WiFi NETWORKS")
+    networks = None
 
-    if scan_clicked or uploaded_file is not None:
-        networks = None
-        if uploaded_file is not None:
-            import json
-            try:
-                networks = json.load(uploaded_file)
-                st.success(f"✅ Loaded {len(networks)} networks from uploaded file!")
-            except Exception:
-                st.error("Error reading the JSON file. Please make sure it's valid.")
-                networks = None
-        
-        if networks is None:
-            with st.spinner("🔍 Scanning nearby WiFi networks..."):
-                time.sleep(1.0)
-                real_networks = scan_real_wifi()
-                used_real     = real_networks is not None and len(real_networks) > 0
+    if uploaded_file is not None:
+        import json
+        try:
+            networks = json.load(uploaded_file)
+            st.success(f"✅ Loaded **{len(networks)} networks** from uploaded file!", icon="📡")
+        except Exception as e:
+            st.error(f"❌ Error reading the JSON file: {e}\n\nPlease make sure it is valid JSON.")
+            networks = None
+    else:
+        st.info(
+            "📤 **Upload a scan file to begin.**  \n"
+            "Run your local WiFi scanner script and upload the JSON output here.",
+            icon="💡"
+        )
 
-            if used_real:
-                networks = real_networks
-                st.success(f"✅ **Real scan complete** — {len(networks)} networks detected from your device", icon="📡")
-            else:
-                networks = generate_simulated_networks()
-                st.info(
-                    "ℹ️ **Simulated scan** — Real WiFi scan unavailable on this environment. "
-                    "On Windows, run the terminal as **Administrator** and ensure WiFi is enabled. "
-                    "Each simulated scan generates fresh randomized results.",
-                    icon="💡"
-                )
-
+    # ── Process and display ──────────────────────────────────────────
+    if networks is not None and len(networks) > 0:
         st.markdown(f"**{len(networks)} networks found**")
         st.markdown('<div class="section-header">Network Threat Analysis</div>', unsafe_allow_html=True)
 
